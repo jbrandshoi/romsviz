@@ -8,7 +8,6 @@ import netCDF4
 # TODO: Allow user to input single point coordinates (instead of tuples) if they want
 #       to extract data from a single point in any of the dimsnions
 # TODO: Allow user to not specify time dimension and get everything (in time)
-# TODO: Fix issue regarding time indices at thr boundary between two files
 # TODO: Some more docstrings m8
 # TODO: Maybe support time indices in addition to dates
 # TODO: Move date to index conversion (in _verify_dim_lmits) before index gathering
@@ -110,7 +109,7 @@ class NetcdfOut(object):
         lims = self._verify_dim_limits(var_meta, **kwargs)  # list of dimension limits
         num_dims = len(var_meta.dimensions)
         
-        print("ejnf", lims)
+        print("lims og", lims)
         
         # the time dimension may span over multiple files
         if self.time_name is not None:
@@ -121,15 +120,16 @@ class NetcdfOut(object):
             for i, ds in enumerate(self.netcdf_list):
                 if use_files[i]:
                     lims = self._update_lims_for_time(lims, t_dist[i], var_meta)  # current file time limits
-                    print(lims)
+                    #print("lims updated", lims)
                     array = self._get_var_nd(var_name, lims, ds)                  # actual data
-                    print(array.shape)
+                    #print("array shape", array.shape)
                     data_list.append(array)
             
             # concatenate data from (possibly) multiple files along time axis
             data = self._concat_in_time(data_list, time_axis=0)  # TODO: Don't assume idx 0 is time
         
         else:
+            lims = self._add_end_point_idx(lims)
             data = self._get_var_nd(var_name, lims, self.netcdf_list[0])  # TODO: Maybe not assume first dataset
         
         return data
@@ -180,7 +180,7 @@ class NetcdfOut(object):
             if key not in var_dim_names:
                 raise KeyError("Variable {} has no dimension {}!".format(
                                var_meta.name, key))
-                
+            
         # gather limits from kwargs that fits with var_dim_names
         for vd_name in var_dim_names:
             # fill limits if missing kwarg for any dimension
@@ -200,13 +200,13 @@ class NetcdfOut(object):
         if self.time_name in var_dim_names:
             t_dim_idx = var_dim_names.index(self.time_name)
             abs_lims[t_dim_idx] = self._get_num_time_entries()
-            t_idx_start, t_idx_stop = self.time_idx_from_dates(*kwargs[self.time_name])    
-            idx_lims[0] = (t_idx_start, t_idx_stop + 1)  # include end point
+            t_idx_start, t_idx_stop = self._idx_from_dates(*kwargs[self.time_name])    
+            idx_lims[t_dim_idx] = (t_idx_start, t_idx_stop + 1)  # include end point
         
         # might add more sections (like the one above for time) here for the other
         # dimensions later if we wish to support input of longitude and latitude etc.
         
-        # check that specified dimension limits are valid (TODO: clean up this loop)
+        # check that specified dimension limits are valid (TODO: clean up this loop and move to func)
         for (l_1, l_2), length, v_name in zip(idx_lims, tuple(abs_lims), var_dim_names):
             valid_lims = l_1 >= 0 and l_1 <= length and l_2 >= 0 and l_2 <= length
             
@@ -219,12 +219,12 @@ class NetcdfOut(object):
                                  l_1, l_2, v_name))
         
         return idx_lims
-    
+        
     def _get_num_time_entries(self):
         """Function that computes total length of time dimension (across files)."""
         return sum(d.variables[self.time_name].shape[0] for d in self.netcdf_list)
 
-    def time_idx_from_dates(self, date_start=None, date_stop=None):
+    def _idx_from_dates(self, date_start=None, date_stop=None):
         """Function docstring..."""
         # combine together time arrays from all files
         t_list = [ds.variables[self.time_name] for ds in self.netcdf_list]
@@ -250,6 +250,7 @@ class NetcdfOut(object):
         t_per_file = [d.variables[self.time_name].shape[0] for d in self.netcdf_list]
         use_files = [False for _ in t_per_file]  # bool values for relevant files
         idx_total = 0  # to count total indices over all files
+        stop_found = False
         
         # compute in what file contains idx_start and idx_stop
         for i in range(len(t_per_file)):
@@ -257,24 +258,35 @@ class NetcdfOut(object):
                 if idx_start == idx_total:
                     file_start = i          # file index for time start
                     i_start = j             # start index within that file
-                    use_files[i] = True     # later extract data from file
                 
                 if idx_stop == idx_total:
-                    file_stop = i           # file index for time stop
-                    i_stop = j              # stop index within that file
-                    use_files[i] = True     # later extract data from file
+                    if j == 0:
+                        file_stop = i - 1         # shift to previous file
+                        i_stop = t_per_file[i-1]  # upper limit in prev file
+                    
+                    else:
+                        file_stop = i           # file index for time stop
+                        i_stop = j              # stop index within that file
+                    
+                    stop_found = True
+                    break
                 
                 idx_total += 1
+            
+            if stop_found:
+                break
         
+        # special case if final chosen time is overall final time
+        if idx_total == sum(t_per_file):
+            file_stop = -1
+            i_stop = t_per_file[-1]
+            
+        use_files[file_start] = True
+        use_files[file_stop] = True
         # structure to tell, in what file and what index, the specified time starts and stops
         t_dist = [[None, None] for _ in range(len(self.netcdf_list))]  # default (None, None)
         t_dist[file_start][0] = i_start  # file and idx for start time
-        
-        if i_stop == 0:
-            t_dist[file_stop][1] = 1    # to avoid getting (None, 0) in t_dist
-        
-        else:
-            t_dist[file_stop][1] = i_stop         # file and idx for stop time
+        t_dist[file_stop][1] = i_stop         # file and idx for stop time
             
         t_dist = tuple(tuple(d) for d in t_dist)  # convert to tuples for safety
         
@@ -283,7 +295,8 @@ class NetcdfOut(object):
         
         if len(trues) == 2 and trues[1] - trues[0] != 1:  # done already if not this
             use_files[trues[0]+1:trues[1]] = [True for _ in range(trues[1]-trues[0]-1)]
-
+        
+        print(use_files)
         return use_files, t_dist
     
     def _update_lims_for_time(self, lims, t_lim, var_meta):
@@ -311,7 +324,8 @@ class NetcdfOut(object):
         num_dims = len(lims)
 
         if num_dims == 0:
-            array = var_meta.getValue()  # just a scalar
+            # self._get_var_scalar(var_name, data_set)
+            array = data_set.variables[var_name].getValue()  # just a scalar
             
         if num_dims == 1:
             array = self._get_var_1d(var_name, lims, data_set)
