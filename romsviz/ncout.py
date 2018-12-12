@@ -12,7 +12,6 @@ import netCDF4
 #       to extract data from a single point in any of the dimsnions
 # TODO (issue): Allow user to not specify time dimension and get everything (in time)
 # TODO (issue): Some more docstrings
-# TODO (enhance): Clean up (enhance) self._compute_time_dist()
 # TODO (issue): Pretty sure the if j == 0 in _compute_time_dist() will mess things up when input files only contain 1 time entry
 # TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
 # TODO: (enhance) Fix multi-calculation of var_dim_names
@@ -140,7 +139,9 @@ class NetcdfOut(object):
             data = np.concatenate(data_list, axis=t_dim_idx)
         
         else:
-            data = self._get_var_nd(var_name, lims, self.netcdf_list[0])  # use e.g. zeroth dataset
+            self._verify_dim_lims(lims, bounds, var_meta)
+            slices = self._lims_to_slices(lims)
+            data = self._get_var_nd(var_name, slices, self.netcdf_list[0])  # use e.g. zeroth dataset
         
         return data
     
@@ -295,8 +296,7 @@ class NetcdfOut(object):
         """Function docstring..."""
         t_per_file = [d.variables[self.time_name].shape[0] for d in self.netcdf_list]
         use_files = [False for _ in t_per_file]  # bool values for relevant files
-        idx_total = 0  # to count total indices over all files
-        stop_found = False
+        idx_total = 0       # to count total indices over all files
         
         # compute in what file contains idx_start and idx_stop
         for i in range(len(t_per_file)):
@@ -306,33 +306,19 @@ class NetcdfOut(object):
                     i_start = j             # start index within that file
                 
                 if idx_stop == idx_total:
-                    if j == 0:
-                        file_stop = i - 1         # shift to previous file
-                        i_stop = t_per_file[i-1]  # upper limit in prev file
+                    file_stop = i           # file index for time stop
+                    i_stop = j              # stop index within that file
                     
-                    else:
-                        file_stop = i           # file index for time stop
-                        i_stop = j              # stop index within that file
-                    
-                    stop_found = True
-                    break
                 
                 idx_total += 1
-            
-            if stop_found:
-                break
         
-        # special case if final chosen time is overall final time
-        if idx_total == sum(t_per_file):
-            file_stop = -1
-            i_stop = t_per_file[-1]
-            
         use_files[file_start] = True
         use_files[file_stop] = True
+        
         # structure to tell, in what file and what index, the specified time starts and stops
         t_dist = [[None, None] for _ in range(len(self.netcdf_list))]  # default (None, None)
         t_dist[file_start][0] = i_start  # file and idx for start time
-        t_dist[file_stop][1] = i_stop         # file and idx for stop time
+        t_dist[file_stop][1] = i_stop    # file and idx for stop time
             
         t_dist = tuple(tuple(d) for d in t_dist)  # convert to tuples for safety
         
