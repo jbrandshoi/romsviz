@@ -14,7 +14,6 @@ import netCDF4
 # TODO (issue): Some more docstrings
 # TODO (enhance): Clean up (enhance) self._compute_time_dist()
 # TODO (issue): Pretty sure the if j == 0 in _compute_time_dist() will mess things up when input files only contain 1 time entry
-# TODO (premium enhance): Replace self._get_var_{1,2,3,4}d() with fancy indexing, i.e. crete an array (of same shape as the output array) indices gotten from the index limits from user (in progress)
 # TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
 # TODO: (enhance) Fix multi-calculation of var_dim_names
 # ============================================================================================
@@ -41,6 +40,7 @@ class NetcdfOut(object):
         self.netcdf_list = self._open_data()
         self.dims = {str(k): v for k, v in self.netcdf_list[0].dimensions.iteritems()}
         self.time_name, self.time_dim = self._get_unlimited_dim()
+        self.time = self.get_time()
     
     def _open_data(self):
         """
@@ -112,11 +112,10 @@ class NetcdfOut(object):
                                             the index limits specified. Only float
                                             when a scalar is requested, else an ndarray.
         """
-        var_meta = self._get_var_meta(var_name)             # netcdf4 variable
+        var_meta = self._get_var_meta(var_name)
         self._verify_kwargs(var_meta, **kwargs)
         lims = self._get_dim_lims(var_meta, **kwargs)
         bounds = list(var_meta.shape)
-        print(lims)
         
         # the time dimension may span over multiple files (or just one)
         if self.time_name is not None:
@@ -132,8 +131,9 @@ class NetcdfOut(object):
             # loop through the all data sets and extract data if inside time limits
             for i, ds in enumerate(self.netcdf_list):
                 if use_files[i]:
-                    lims = self._update_list_for_time(lims, t_dist[i], var_meta)  # current file time limits
-                    array = self._get_var_nd(var_name, lims, ds)                  # actual data
+                    lims = self._update_list_for_time(lims, t_dist[i], var_meta)
+                    slices = self._lims_to_slices(lims)
+                    array = self._get_var_nd(var_name, slices, ds)
                     data_list.append(array)
             
             # concatenate data from (possibly) multiple files along time axis
@@ -145,7 +145,8 @@ class NetcdfOut(object):
         return data
     
     def _get_var_meta(self, var_name):
-        """Function that returns the meta data for requested variable.
+        """
+        Function that returns the meta data for requested variable.
         
         Args:
             var_name (string) : Name of variable
@@ -169,7 +170,7 @@ class NetcdfOut(object):
         being in the exact same order as the actual dimensions variable.
         
         Args:
-            var_meta (netCDF4.Variable) : Meta data for Variable of interest
+            var_meta (netCDF4.Variable) : Meta data for variable
         
         Kwargs:
             kwargs (dict) : See kwargs in self.get_var()
@@ -231,6 +232,16 @@ class NetcdfOut(object):
         """Function that computes total length of time dimension (across files)."""
         return sum(d.variables[self.time_name].shape[0] for d in self.netcdf_list)
     
+    def get_time(self):
+        """
+        Function that stitches together the time array in all
+        (could be just one) input files.
+        """
+        t_list = [ds.variables[self.time_name] for ds in self.netcdf_list]
+        t_raw = np.concatenate([t[:] for t in t_list], axis=0)
+        t_dates = netCDF4.num2date(t_raw, t_list[0].units)
+        return t_dates
+    
     def _get_time_dim_idx(self, var_meta):
         """
         Function that finds the index for the time dimension.
@@ -254,7 +265,9 @@ class NetcdfOut(object):
         total_length = self._get_num_time_entries()
         
         if type(lims[0]) is dt.datetime:
-            return self._idx_from_dates(*lims)
+            idx_start = self._idx_from_date(lims[0])
+            idx_stop = self._idx_from_date(lims[1])
+            return (idx_start, idx_stop)
         
         elif type(lims[0]) is int:
             return lims
@@ -262,33 +275,21 @@ class NetcdfOut(object):
         else:
             raise TypeError("Invalid type {} for {}".format(type(lims[0]), self.time_name))
     
+    def _idx_from_date(self, date):
+        """Function docstring..."""
+        idx = np.where(self.time == date)  # assume only 1 occurence of date
+        
+        if len(idx[0]) == 0:
+            raise ValueError("Date {} not in {}!".format(date, self.time_name))
+        
+        return idx[0][0]
+    
     def _update_list_for_time(self, list_update, element, var_meta):
         """Function docstring..."""
         var_dim_names = self._get_var_dim_names(var_meta)
         idx = var_dim_names.index(self.time_name)
         list_update[idx] = element
         return list_update
-
-    def _idx_from_dates(self, date_start=None, date_stop=None):
-        """Function docstring..."""
-        # combine together time arrays from all files
-        t_list = [ds.variables[self.time_name] for ds in self.netcdf_list]
-        t_raw = np.concatenate([t[:] for t in t_list], axis=0)
-        t_dates = netCDF4.num2date(t_raw, t_list[0].units)
-        
-        def idx_from_date(date_array, date):
-            idx = np.where(date_array == date)  # assume only 1 occurence of date
-            
-            if len(idx[0]) == 0:
-                raise ValueError("Date {} not in {}!".format(date, self.time_name))
-            
-            return idx[0][0]
-            
-        idx_start = idx_from_date(t_dates, date_start)
-        idx_stop = idx_from_date(t_dates, date_stop)
-        #t_slice = t_dates[idx_start:idx_stop]
-        
-        return idx_start, idx_stop
     
     def _compute_time_dist(self, idx_start, idx_stop):
         """Function docstring..."""
@@ -341,56 +342,24 @@ class NetcdfOut(object):
         if len(trues) == 2 and trues[1] - trues[0] != 1:  # done already if not this
             use_files[trues[0]+1:trues[1]] = [True for _ in range(trues[1]-trues[0]-1)]
         
-        
         return use_files, t_dist
     
-    def _get_var_nd(self, var_name, lims, data_set):
+    def _lims_to_slices(self, lims):
         """Function docstring..."""
-        num_dims = len(lims)
-
-        if num_dims == 0:
-            # self._get_var_scalar(var_name, data_set)
-            array = data_set.variables[var_name].getValue()  # just a scalar
+        slices = list()
+        
+        for l in lims:
+            if l[1] is not None:
+                slices.append(slice(l[0], l[1] + 1))
             
-        if num_dims == 1:
-            array = self._get_var_1d(var_name, lims, data_set)
+            else:
+                slices.append(slice(None, None))
         
-        elif num_dims == 2:
-            array = self._get_var_2d(var_name, lims, data_set)
-            
-        elif num_dims == 3:
-            array = self._get_var_3d(var_name, lims, data_set)
+        return tuple(slices)
         
-        elif num_dims == 4:
-            array = self._get_var_4d(var_name, lims, data_set)
-        
-        else:
-            raise NotImplementedError("No num_dims > 4 support yet")
-        
-        return array
-        
-    def _get_var_1d(self, var_name, lims, data_set):
+    def _get_var_nd(self, var_name, slices, dataset):
         """Function docstring..."""
-        array = data_set.variables[var_name][lims[0][0]:lims[0][1]]
-        return array
-        
-    def _get_var_2d(self, var_meta, lims, data_set):
-        """Function docstring..."""
-        array = data_set.variables[var_name][lims[0][0]:lims[0][1],
-            lims[1][0]:lims[1][1]]
-        return array
-    
-    def _get_var_3d(self, var_name, lims, data_set):
-        """Function docstring..."""
-        array = data_set.variables[var_name][lims[0][0]:lims[0][1],
-            lims[1][0]:lims[1][1], lims[2][0]:lims[2][1]]
-        return array
-        
-    def _get_var_4d(self, var_name, lims, data_set):
-        """Function docstring..."""
-        array = data_set.variables[var_name][lims[0][0]:lims[0][1],
-            lims[1][0]:lims[1][1], lims[2][0]:lims[2][1], lims[3][0]:lims[3][1]]
-        return array
+        return dataset.variables[var_name][slices]
     
     def set_time_name(self, name):
         """Function docstring..."""
