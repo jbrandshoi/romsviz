@@ -339,12 +339,13 @@ class NetcdfOut(object):
                 slices.append(slice(l[0], l[1] + 1))
             
             else:
-                slices.append(slice(None, None))
+                slices.append(slice(l[0], None))
         
         return tuple(slices)
         
     def _get_var_nd(self, var_name, slices, dataset):
         """Function docstring..."""
+        print(slices)
         return dataset.variables[var_name][slices]
     
     def set_time_name(self, name):
