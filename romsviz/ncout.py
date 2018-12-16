@@ -8,9 +8,6 @@ import netCDF4
 # Things left to fix (both real issues and enhancements). The number of edge cases is insane!
 # You should see the length of this list if I didn't remove stuff along the way.
 # ============================================================================================
-# TODO: (enhance): Allow user to input single point coordinates (instead of tuples) if they want
-#       to extract data from a single point in any of the dimsnions
-# TODO: (issue): Allow user to not specify time dimension and get everything (in time)
 # TODO: (issue): Some more docstrings
 # TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
 # ============================================================================================
@@ -182,9 +179,17 @@ class NetcdfOut(object):
             
             # fill limits if missing kwarg for any dimension
             if vd_name not in kwargs.keys():
-                kwargs[vd_name] = self.default_lim  # default to entire range
+                lim = self.default_lim  # default to entire range
+            
+            # if user gives e.g. int, float, dt.datetime
+            elif type(kwargs[vd_name]) not in [tuple, list]:
+                lim = (kwargs[vd_name], kwargs[vd_name])
+            
+            # if user has given tuple or list of limits
+            else:
+                lim = kwargs[vd_name]
                 
-            idx_lims.append(kwargs[vd_name])  # store user inputed limits
+            idx_lims.append(lim)  # store user inputed limits
         
         return idx_lims
     
@@ -213,6 +218,9 @@ class NetcdfOut(object):
         """
         # check that specified dimension limits are valid
         for (l_1, l_2), length, vd_name in zip(lims, bounds, vd_names):
+            if (l_1, l_2) == self.default_lim:
+                continue  # nothing to check if default limits
+                
             valid_lims = l_1 >= 0 and l_1 <= length and l_2 >= 0 and l_2 <= length
             
             if not valid_lims:
