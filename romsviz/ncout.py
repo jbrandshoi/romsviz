@@ -38,6 +38,7 @@ class NetcdfOut(object):
         self.dims = {str(k): v for k, v in self.netcdf_list[0].dimensions.iteritems()}
         self.time_name, self.time_dim = self._get_unlimited_dim()
         self.time = self.get_time()
+        self.default_lim = (None, None)
     
     def _open_data(self):
         """
@@ -109,6 +110,7 @@ class NetcdfOut(object):
                                             the index limits specified. Only float
                                             when a scalar is requested, else an ndarray.
         """
+        # get variable info and verify user inputed dimension limits
         var_meta = self._get_var_meta(var_name)
         vd_names = [str(s) for s in var_meta.dimensions]
         self._verify_kwargs(var_name, vd_names, **kwargs)
@@ -118,10 +120,10 @@ class NetcdfOut(object):
         # the time dimension may span over multiple files (or just one)
         if self.time_name is not None:
             t_dim_idx = self._get_time_dim_idx(vd_names)
-            t_lim = self._get_time_lims(kwargs[self.time_name])
+            t_lim = self._get_time_lims(lims[t_dim_idx])
             t_bound = self._get_num_time_entries()
-            lims = self._update_list_for_time(lims, t_lim, t_dim_idx)
-            bounds = self._update_list_for_time(bounds, t_bound, t_dim_idx)
+            lims[t_dim_idx] = t_lim
+            bounds[t_dim_idx] = t_bound
             self._verify_dim_lims(lims, bounds, vd_names)
             use_files, t_dist = self._compute_time_dist(*lims[t_dim_idx])
             data_list = list()
@@ -129,7 +131,7 @@ class NetcdfOut(object):
             # loop through the all data sets and extract data if inside time limits
             for i, ds in enumerate(self.netcdf_list):
                 if use_files[i]:
-                    lims = self._update_list_for_time(lims, t_dist[i], t_dim_idx)
+                    lims[t_dim_idx] = t_dist[i]
                     slices = self._lims_to_slices(lims)
                     array = self._get_var_nd(var_name, slices, ds)
                     data_list.append(array)
@@ -137,6 +139,7 @@ class NetcdfOut(object):
             # concatenate data from (possibly) multiple files along time axis
             data = np.concatenate(data_list, axis=t_dim_idx)
         
+        # very simple if there's no time dimension
         else:
             self._verify_dim_lims(lims, bounds, vd_names)
             slices = self._lims_to_slices(lims)
@@ -179,7 +182,7 @@ class NetcdfOut(object):
             
             # fill limits if missing kwarg for any dimension
             if vd_name not in kwargs.keys():
-                kwargs[vd_name] = (0, self.dims[vd_name].size)  # default to entire range
+                kwargs[vd_name] = self.default_lim  # default to entire range
                 
             idx_lims.append(kwargs[vd_name])  # store user inputed limits
         
@@ -215,7 +218,7 @@ class NetcdfOut(object):
             if not valid_lims:
                 raise ValueError("Index limits {} are outside (0, {}) for {}!".format(
                                  (l_1, l_2), length, vd_name))
-            
+                                 
             if l_2 < l_1:
                 raise ValueError("Lower index {} larger than upper {} for {}!".format(
                                  l_1, l_2, vd_name))
@@ -259,16 +262,19 @@ class NetcdfOut(object):
         """
         total_length = self._get_num_time_entries()
         
-        if type(t_lim[0]) is dt.datetime:
+        if t_lim == self.default_lim:
+            return (0, total_length - 1)
+        
+        elif type(t_lim[0]) is int or type(t_lim[1]) is int:
+            return t_lim
+            
+        elif type(t_lim[0]) is dt.datetime:
             idx_start = self._idx_from_date(t_lim[0])
             idx_stop = self._idx_from_date(t_lim[1])
             return (idx_start, idx_stop)
         
-        elif type(t_lim[0]) is int:
-            return t_lim
-        
         else:
-            raise TypeError("Invalid type {} for {}".format(type(lims[0]), self.time_name))
+            raise TypeError("Invalid limits {} for {}".format(t_lim, self.time_name))
     
     def _idx_from_date(self, date):
         """Function docstring..."""
@@ -278,11 +284,6 @@ class NetcdfOut(object):
             raise ValueError("Date {} not in {}!".format(date, self.time_name))
         
         return idx[0][0]
-    
-    def _update_list_for_time(self, list_update, element, t_dim_idx):
-        """Function docstring..."""
-        list_update[t_dim_idx] = element
-        return list_update
     
     def _compute_time_dist(self, idx_start, idx_stop):
         """Function docstring..."""
@@ -328,10 +329,10 @@ class NetcdfOut(object):
         
         for l in lims:
             if l[1] is not None:
-                slices.append(slice(l[0], l[1] + 1))
+                slices.append(slice(l[0], l[1] + 1))  # include end point too
             
             else:
-                slices.append(slice(l[0], None))
+                slices.append(slice(l[0], l[1]))
         
         return tuple(slices)
         
