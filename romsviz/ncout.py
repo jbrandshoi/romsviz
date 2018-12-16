@@ -5,16 +5,14 @@ import datetime as dt
 import numpy as np
 import netCDF4
 
-# Things left to fix (both real issues and enhancements. The number of edge cases is insane!
+# Things left to fix (both real issues and enhancements). The number of edge cases is insane!
 # You should see the length of this list if I didn't remove stuff along the way.
 # ============================================================================================
-# TODO (enhance): Allow user to input single point coordinates (instead of tuples) if they want
+# TODO: (enhance): Allow user to input single point coordinates (instead of tuples) if they want
 #       to extract data from a single point in any of the dimsnions
-# TODO (issue): Allow user to not specify time dimension and get everything (in time)
-# TODO (issue): Some more docstrings
-# TODO (issue): Pretty sure the if j == 0 in _compute_time_dist() will mess things up when input files only contain 1 time entry
+# TODO: (issue): Allow user to not specify time dimension and get everything (in time)
+# TODO: (issue): Some more docstrings
 # TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
-# TODO: (enhance) Fix multi-calculation of var_dim_names
 # ============================================================================================
 
 class NetcdfOut(object):
@@ -112,25 +110,26 @@ class NetcdfOut(object):
                                             when a scalar is requested, else an ndarray.
         """
         var_meta = self._get_var_meta(var_name)
-        self._verify_kwargs(var_meta, **kwargs)
-        lims = self._get_dim_lims(var_meta, **kwargs)
+        vd_names = [str(s) for s in var_meta.dimensions]
+        self._verify_kwargs(var_name, vd_names, **kwargs)
+        lims = self._get_dim_lims(vd_names, **kwargs)
         bounds = list(var_meta.shape)
         
         # the time dimension may span over multiple files (or just one)
         if self.time_name is not None:
-            t_dim_idx = self._get_time_dim_idx(var_meta)
-            t_lim = self._get_time_lims(var_meta, kwargs[self.time_name])
+            t_dim_idx = self._get_time_dim_idx(vd_names)
+            t_lim = self._get_time_lims(kwargs[self.time_name])
             t_bound = self._get_num_time_entries()
-            lims = self._update_list_for_time(lims, t_lim, var_meta)
-            bounds = self._update_list_for_time(bounds, t_bound, var_meta)
-            self._verify_dim_lims(lims, bounds, var_meta)
+            lims = self._update_list_for_time(lims, t_lim, t_dim_idx)
+            bounds = self._update_list_for_time(bounds, t_bound, t_dim_idx)
+            self._verify_dim_lims(lims, bounds, vd_names)
             use_files, t_dist = self._compute_time_dist(*lims[t_dim_idx])
             data_list = list()
             
             # loop through the all data sets and extract data if inside time limits
             for i, ds in enumerate(self.netcdf_list):
                 if use_files[i]:
-                    lims = self._update_list_for_time(lims, t_dist[i], var_meta)
+                    lims = self._update_list_for_time(lims, t_dist[i], t_dim_idx)
                     slices = self._lims_to_slices(lims)
                     array = self._get_var_nd(var_name, slices, ds)
                     data_list.append(array)
@@ -139,7 +138,7 @@ class NetcdfOut(object):
             data = np.concatenate(data_list, axis=t_dim_idx)
         
         else:
-            self._verify_dim_lims(lims, bounds, var_meta)
+            self._verify_dim_lims(lims, bounds, vd_names)
             slices = self._lims_to_slices(lims)
             data = self._get_var_nd(var_name, slices, self.netcdf_list[0])  # use e.g. zeroth dataset
         
@@ -161,26 +160,22 @@ class NetcdfOut(object):
         else:
             return self.netcdf_list[0].variables[var_name]
     
-    def _get_var_dim_names(self, var_meta):
-        return [str(s) for s in var_meta.dimensions]
-    
-    def _get_dim_lims(self, var_meta, **kwargs):
+    def _get_dim_lims(self, vd_names, **kwargs):
         """
         Function that extracts user provided keyword arguments for
         dimension index limits and constructs a list of with the limits
         being in the exact same order as the actual dimensions variable.
         
         Args:
-            var_meta (netCDF4.Variable) : Meta data for variable
+            vd_names (list) : List of actual variable dimension names
         
         Kwargs:
             kwargs (dict) : See kwargs in self.get_var()
         """
-        var_dim_names = self._get_var_dim_names(var_meta)
         idx_lims = list()
         
         # loop over all actual dimensions of the variable
-        for vd_name in var_dim_names:
+        for vd_name in vd_names:
             
             # fill limits if missing kwarg for any dimension
             if vd_name not in kwargs.keys():
@@ -190,7 +185,7 @@ class NetcdfOut(object):
         
         return idx_lims
     
-    def _verify_kwargs(self, var_meta, **kwargs):
+    def _verify_kwargs(self, var_name, vd_names, **kwargs):
         """
         Function that raises error if not all dimension names
         specified in kwargs are in valid dimensions for the variable.
@@ -198,80 +193,79 @@ class NetcdfOut(object):
         Kwargs:
             kwargs (dict) : See kwargs in self.get_var()
         """
-        var_dim_names = self._get_var_dim_names(var_meta)
         
         for key in kwargs.keys():
-            if key not in var_dim_names:
-                raise ValueError("Variable {} has no dimension {}!".format(
-                                 var_meta.name, key))
+            if key not in vd_names:
+                raise ValueError("Variable {} has no dimension {}!".format(var_name, key))
         
-    def _verify_dim_lims(self, lims, bounds, var_meta):
+    def _verify_dim_lims(self, lims, bounds, vd_names):
         """
         Function that verifies if the user provided index limits on
         the requested variable are within bounds, raises error if not.
         
         Args:
-            lims (list)                 : List of tuples with index limits
-            bounds (list)               : List of upper index bounds
-            var_meta (netCDF4.Variable) : Meta data for variable
+            lims (list)     : List of tuples with index limits
+            bounds (list)   : List of upper index bounds
+            vd_names (list) : List of actual variable dimension names
         """
-        var_dim_names = self._get_var_dim_names(var_meta)
-        
         # check that specified dimension limits are valid
-        for (l_1, l_2), length, v_name in zip(lims, bounds, var_dim_names):
+        for (l_1, l_2), length, vd_name in zip(lims, bounds, vd_names):
             valid_lims = l_1 >= 0 and l_1 <= length and l_2 >= 0 and l_2 <= length
             
             if not valid_lims:
                 raise ValueError("Index limits {} are outside (0, {}) for {}!".format(
-                                 (l_1, l_2), length, v_name))
+                                 (l_1, l_2), length, vd_name))
             
             if l_2 < l_1:
                 raise ValueError("Lower index {} larger than upper {} for {}!".format(
-                                 l_1, l_2, v_name))
+                                 l_1, l_2, vd_name))
         
     def _get_num_time_entries(self):
-        """Function that computes total length of time dimension (across files)."""
+        """Function that counts number of total time entries (across files).
+        
+        Returns:
+            num_time_entries (int) : Number of time elements across all input files
+        """
         return sum(d.variables[self.time_name].shape[0] for d in self.netcdf_list)
     
     def get_time(self):
-        """
-        Function that stitches together the time array in all
-        (could be just one) input files.
+        """Function that stitches together the time array over all files.
+        
+        Returns:
+            t_dates (np.ndarray (1D)) : Full time array across all files
         """
         t_list = [ds.variables[self.time_name] for ds in self.netcdf_list]
         t_raw = np.concatenate([t[:] for t in t_list], axis=0)
         t_dates = netCDF4.num2date(t_raw, t_list[0].units)
         return t_dates
     
-    def _get_time_dim_idx(self, var_meta):
+    def _get_time_dim_idx(self, vd_names):
         """
         Function that finds the index for the time dimension.
         
         Args:
-            var_meta (netCDF4.Variable) : Meta data for variable
+            vd_names (list) : List of actual variable dimension names
         """
-        var_dim_names = self._get_var_dim_names(var_meta)
-        return var_dim_names.index(self.time_name)
+        return vd_names.index(self.time_name)
         
-    def _get_time_lims(self, var_meta, lims):
+    def _get_time_lims(self, t_lim):
         """
         Function that handles user provided time limits and returns
         index limits spanning (possibly) over several files.
         
         Args:
-            lims (list)                 : Start- and end limits for time (can
-                                          be both datetime or indices (int))
-            var_meta (netCDF4.Variable) : Meta data for variable
+            lims (list) : Start- and end limits for time (can
+                          be both datetime or indices (int))
         """
         total_length = self._get_num_time_entries()
         
-        if type(lims[0]) is dt.datetime:
-            idx_start = self._idx_from_date(lims[0])
-            idx_stop = self._idx_from_date(lims[1])
+        if type(t_lim[0]) is dt.datetime:
+            idx_start = self._idx_from_date(t_lim[0])
+            idx_stop = self._idx_from_date(t_lim[1])
             return (idx_start, idx_stop)
         
-        elif type(lims[0]) is int:
-            return lims
+        elif type(t_lim[0]) is int:
+            return t_lim
         
         else:
             raise TypeError("Invalid type {} for {}".format(type(lims[0]), self.time_name))
@@ -285,11 +279,9 @@ class NetcdfOut(object):
         
         return idx[0][0]
     
-    def _update_list_for_time(self, list_update, element, var_meta):
+    def _update_list_for_time(self, list_update, element, t_dim_idx):
         """Function docstring..."""
-        var_dim_names = self._get_var_dim_names(var_meta)
-        idx = var_dim_names.index(self.time_name)
-        list_update[idx] = element
+        list_update[t_dim_idx] = element
         return list_update
     
     def _compute_time_dist(self, idx_start, idx_stop):
