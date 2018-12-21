@@ -13,42 +13,22 @@ class RomsViz(ncout.NetcdfOut):
         self.default_title_fs = 20
         self.default_label_fs = 15
     
-    def time_series(self, var_name, figax=None, **indices):
-        """Functino docstring..."""
-        data = self.get_data(var_name, **indices).squeeze()
+    def time_series(self, var_name, figax=None, **limits):
+        """Function docstring..."""
+        var = self.get_var(var_name, **limits)
         
-        if len(data.shape) > 1:
+        if len(var.data.shape) > 1:
             raise ValueError("Only {} can be non-single index!".format(self.time_name))
         
-        # fetch time array for relevant period (default to entire range)
-        try:
-            t_start = indices[self.time_name][0]
-            t_stop = indices[self.time_name][1]
-        
-        except KeyError:
-            t_start = 0
-            t_stop = len(self.time) - 1
-        
-        if type(t_start) is dt.datetime:
-            t_start = self._idx_from_date(t_start)
-            t_stop = self._idx_from_date(t_stop)
-        
-        t = self.time[t_start:t_stop+1]
-        
         # generate a string from dimension limits
-        indices_str = ""
-        
-        for k, v in indices.iteritems():
-            if k != self.time_name:
-                indices_str += "{}: {}, ".format(k, v)
+        limits_str = var.generate_lims_string(exclude=[var.time_name])
         
         # plot time series with dates on the x-axis
-        var_meta = self._get_var_meta(var_name)  # to get long_name and units
         fig, ax = self._get_figax(figsize=(12,5), figax=figax)
-        ax.plot(t, data, linewidth=1)
         ax.grid(True)
-        ax.set_title("{}, {}".format(var_meta.long_name.title(), indices_str))
-        ax.set_ylabel("{} [{}]".format(var_name, var_meta.units))
+        ax.plot(var.time, var.data, linewidth=1)
+        ax.set_title("{}{}".format(var.meta.long_name.title(), limits_str))
+        ax.set_ylabel("{} [{}]".format(var.name, var.meta.units))
         ax = self._set_default_text(ax)
         fig.autofmt_xdate()
         fig.tight_layout()

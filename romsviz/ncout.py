@@ -20,9 +20,9 @@ class NetcdfOut(object):
     
     Important Assumptions:
         * If called with wildcard or list of multiple filenames, all data in the different
-          files are assumed to be of the same structure (all variables are present in all
-          files), only difference being the elements in the time array. Also, automatic
-          expansion of the wildcard is assumed to list the files in the correct order.
+          files are assumed to be of the same structure (all variables are present with same
+          shape in all files), only difference being the elements in the time array. Also,
+          automatic expansion of the wildcard is assumed to list the files in the correct order.
         * There are only one unlimited dimension and that is time.
     """
     def __init__(self, filepath):
@@ -34,16 +34,12 @@ class NetcdfOut(object):
             filepath (str/list) : Path/wildcard/list to netcdf data file(s)
         """
         self.filepath = filepath
-        self.nc_list = self._open_data()
-        self.dims = {k.encode("utf8"): v for k, v in self.nc_list[0].dimensions.iteritems()}
+        self.filepaths, self.netcdfs = self.open_data()
+        self.dims = {k.encode("utf8"): v for k, v in self.netcdfs[0].dimensions.items()}
         self.default_lim = (None, None)
-        
         self.time_name, self.time_dim = self._get_unlimited_dim()
-        
-        if self.time_name is not None:
-            self.time = self.get_time()
     
-    def _open_data(self):
+    def open_data(self):
         """
         Function that parses instance attribute self.filepath and interpretates it
         as either a string (can be wildcard) or list and opens all mathcing netcdf files.
@@ -53,30 +49,30 @@ class NetcdfOut(object):
         """
         # depending on type supplied by user, create list fo filepaths
         if type(self.filepath) is str:
-            filepath_list = glob.glob(self.filepath)  # expand potential wildcard
+            filepaths = glob.glob(self.filepath)  # expand potential wildcard
         
         elif type(self.filepath) is list:
-            filepath_list = self.filepath  # keep user inputed list
+            filepaths = self.filepath             # keep user inputed list
         
         else:
-            raise TypeError("{} needs to be str or list".format(type(self.filepath)))
+            raise TypeError("{} must be str or list".format(self.filepath))
         
-        if len(filepath_list) == 0:
+        if len(filepaths) == 0:
             raise IOError("Invalid path(s) {}!".format(self.filepath))
 
-        filepath_list = sorted(filepath_list)  # sort in case wildcard or user forgot
-        netcdf_list = list()                   # to hold netcdf4 objects (open files)
+        filepaths = sorted(filepaths)  # sort in case wildcard or user forgot
+        netcdfs = list()               # to hold netcdf4 objects (open files)
         
         # loop over each filepath and open netcdf file
-        for path in filepath_list:
+        for path in filepaths:
             try:
                 print("Opening file {}".format(path))
-                netcdf_list.append(netCDF4.Dataset(path))
+                netcdfs.append(netCDF4.Dataset(path, "r"))
             
             except Exception as e:
                 sys.exit("Error: Failed opening file {}, {}".format(path, e))
         
-        return netcdf_list
+        return filepaths, netcdfs
     
     def _get_unlimited_dim(self):
         """Function that finds the unlimited dimension in the dataset. Returns
@@ -86,13 +82,13 @@ class NetcdfOut(object):
             dim_name (str)          : Name of unlimited dimension
             dim (netCDF4.Dimension) : Dimension object for unlimtied dim
         """
-        for dim_name, dim in self.dims.iteritems():
+        for dim_name, dim in self.dims.items():
             if dim.isunlimited():
                 return dim_name, dim
         
         return None, None
     
-    def get_data(self, var_name, **limits):
+    def get_var(self, var_name, **limits):
         """
         Function that supervises the fetching of data from a certain netcdf output
         variable. User may define index limits for all dimensions (or only some of
@@ -121,38 +117,40 @@ class NetcdfOut(object):
         self._verify_kwargs(var.name, var.dim_names, **limits)
         var.lims = self._get_dim_lims(var.dim_names, **limits)
         var.bounds = list(var.meta.shape)
+        var.time_name = self._unlimdim_in_dims(var.dim_names)
         
         # the time dimension may span over multiple files
-        if self.time_name is not None:
-            t_dim_idx = self._get_time_dim_idx(var.dim_names)
-            var.lims[t_dim_idx] = self._get_time_lims(var.lims[t_dim_idx])
-            var.bounds[t_dim_idx] = self._get_num_time_entries()
+        if var.time_name is not None:
+            self.set_time_array()
+            i_td = self._get_time_dim_idx(var.dim_names)
+            var.bounds[i_td] = self._get_num_time_entries()
+            var.lims[i_td] = self._get_time_lims(var.lims[i_td], var.bounds[i_td])
             self._verify_lims(var.lims, var.bounds, var.dim_names)
-            var.use_files, var.t_dist = self._compute_time_dist(*var.lims[t_dim_idx])
+            var.use_files, var.t_dist = self._compute_time_dist(*var.lims[i_td])
             data_list = list()
             lims = var.lims[:]
             
             # loop through the all data sets and extract data if inside time limits
-            for i, ds in enumerate(self.nc_list):
+            for i, ds in enumerate(self.netcdfs):
                 if var.use_files[i]:
-                    lims[t_dim_idx] = var.t_dist[i]
+                    lims[i_td] = var.t_dist[i]
                     slices = self._lims_to_slices(lims)
                     array = self._get_var_nd(var.name, slices, ds)
                     data_list.append(array)
             
             # concatenate data from (possibly) multiple files along time axis
-            data = np.concatenate(data_list, axis=t_dim_idx)
+            data = np.concatenate(data_list, axis=i_td)
+            var.time = self.time[self._lims_to_slices([var.lims[i_td]])]  # include time slice
         
         # very simple if there's no time dimension
         else:
             self._verify_lims(var.lims, var.bounds, var.dim_names)
             slices = self._lims_to_slices(var.lims)
-            data = self._get_var_nd(var.name, slices, self.nc_list[0])  # use e.g. zeroth dataset
+            data = self._get_var_nd(var.name, slices, self.netcdfs[0])  # use e.g. zeroth dataset
 
-        var.data = data  # finally store the main array in var object
+        var.data = data.squeeze()  # finally store the main array in var object
         return var
         
-    
     def _get_var_meta(self, var_name):
         """
         Function that returns the meta data for requested variable.
@@ -163,12 +161,20 @@ class NetcdfOut(object):
         Returns:
             var_meta (netCDF4.Variable) : Meta data for the variable
         """
-        if not var_name in self.nc_list[0].variables:
+        if not var_name in self.netcdfs[0].variables:
             raise ValueError("Variable {} not in output data".format(var_name))
         
         else:
-            return self.nc_list[0].variables[var_name]
+            return self.netcdfs[0].variables[var_name]
     
+    def _unlimdim_in_dims(self, vd_names):
+        if self.time_name is not None:
+            for vd_name in vd_names:
+                if vd_name == self.time_name:
+                    return vd_name
+        
+        return None
+        
     def _get_dim_lims(self, vd_names, **limits):
         """
         Function that extracts user provided keyword arguments for
@@ -210,7 +216,6 @@ class NetcdfOut(object):
         Kwargs:
             limits (dict) : See limits in self.get_var()
         """
-        
         for key in limits.keys():
             if key not in vd_names:
                 raise ValueError("Variable {} has no dimension {}!".format(var_name, key))
@@ -246,18 +251,18 @@ class NetcdfOut(object):
         Returns:
             num_time_entries (int) : Number of time elements across all input files
         """
-        return sum(d.variables[self.time_name].shape[0] for d in self.nc_list)
+        return sum(d.variables[self.time_name].shape[0] for d in self.netcdfs)
     
-    def get_time(self):
+    def set_time_array(self):
         """Function that stitches together the time array over all files.
         
         Returns:
             t_dates (np.ndarray (1D)) : Full time array across all files
         """
-        t_list = [ds.variables[self.time_name] for ds in self.nc_list]
+        t_list = [ds.variables[self.time_name] for ds in self.netcdfs]
         t_raw = np.concatenate([t[:] for t in t_list], axis=0)
         t_dates = netCDF4.num2date(t_raw, t_list[0].units)
-        return t_dates
+        self.time = t_dates
     
     def _get_time_dim_idx(self, vd_names):
         """
@@ -268,7 +273,7 @@ class NetcdfOut(object):
         """
         return vd_names.index(self.time_name)
         
-    def _get_time_lims(self, t_lim):
+    def _get_time_lims(self, t_lim, total_length):
         """
         Function that handles user provided time limits and returns
         index limits spanning (possibly) over several files.
@@ -277,8 +282,6 @@ class NetcdfOut(object):
             lims (list) : Start- and end limits for time (can
                           be both datetime or indices (int))
         """
-        total_length = self._get_num_time_entries()
-        
         if t_lim == self.default_lim:
             return (0, total_length - 1)
         
@@ -304,7 +307,7 @@ class NetcdfOut(object):
     
     def _compute_time_dist(self, idx_start, idx_stop):
         """Function docstring..."""
-        t_per_file = [d.variables[self.time_name].shape[0] for d in self.nc_list]
+        t_per_file = [d.variables[self.time_name].shape[0] for d in self.netcdfs]
         use_files = [False for _ in t_per_file]  # bool values for relevant files
         idx_total = 0       # to count total indices over all files
         
@@ -325,7 +328,7 @@ class NetcdfOut(object):
         use_files[file_stop] = True
         
         # structure to tell, in what file and what index, the specified time starts and stops
-        t_dist = [[None, None] for _ in range(len(self.nc_list))]  # default (None, None)
+        t_dist = [[None, None] for _ in range(len(self.netcdfs))]  # default (None, None)
         t_dist[file_start][0] = i_start  # file and idx for start time
         t_dist[file_stop][1] = i_stop    # file and idx for stop time
             
@@ -357,12 +360,8 @@ class NetcdfOut(object):
         print(slices)
         return dataset.variables[var_name][slices]
     
-    def set_time_name(self, name):
-        """Function docstring..."""
-        self.time_name = name
-    
     def __del__(self):
         """Destructor function closing all files."""
-        for data in self.nc_list:
+        for data in self.netcdfs:
             data.close()
         
