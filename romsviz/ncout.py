@@ -357,7 +357,6 @@ class NetcdfOut(object):
         
     def _get_var_nd(self, var_name, slices, dataset):
         """Function docstring..."""
-        print(slices)
         return dataset.variables[var_name][slices]
     
     def __del__(self):
