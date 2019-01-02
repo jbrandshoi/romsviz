@@ -13,22 +13,22 @@ class OutVar(object):
         self.time_name = None
         self.time = None
     
-    def idx_from_lims(self, dim_name):
+    def extract_lim(self, dim_name):
         """Function docstring..."""
         for i in range(len(self.dim_names)):
             if self.dim_names[i] == dim_name:
                 return self.lims[i]
         
         raise ValueError("{} is not a dimension of {}!".format(
-            dim_name, self.var_name))
+                         dim_name, self.var_name))
     
-    def identify_dim(self, variants):
+    def identify_dim(self, suggestions):
         for dim_name in self.dim_names:
-            for d in variants:
+            for d in suggestions:
                 if dim_name == d:
                     return dim_name
         
-        raise ValueError("No dimension of {} are in <variants>".format(self.var_name))
+        raise ValueError("No dimension of {} are in <suggestions>".format(self.name))
     
     def attr_to_string(self, obj, attr):
         """Function docstring..."""
@@ -66,3 +66,4 @@ class OutVar(object):
         
         else:
             return self.var_meta
+

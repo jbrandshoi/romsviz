@@ -1,4 +1,10 @@
 
+# ============================================================================================
+# TODO: (issue): Some more docstrings
+# TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
+# TODO: Possibly move datatype checking in _get_dim_lims() to _verify_kwargs()
+# ============================================================================================
+
 import sys
 import glob
 import collections
@@ -6,14 +12,6 @@ import datetime as dt
 import numpy as np
 import netCDF4
 import outvar
-
-# Things left to fix (both real issues and enhancements). The number of edge cases is insane!
-# You should see the length of this list if I didn't remove stuff along the way.
-# ============================================================================================
-# TODO: (issue): Some more docstrings
-# TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
-# TODO: Possibly move datatype checking in _get_dim_lims() to _verify_kwargs()
-# ============================================================================================
 
 class NetcdfOut(object):
     """Class docstring...
@@ -207,6 +205,16 @@ class NetcdfOut(object):
             idx_lims.append(lim)  # store user inputed limits
         
         return idx_lims
+    
+    def _get_range_dims(self, dim_names, lims):
+        """Function docstring..."""
+        range_dims = list()
+        
+        for d_name, lim in zip(dim_names, lims):
+            if lim[1] != lim[0]:
+                range_dims.append(d_name)
+        
+        return range_dims
     
     def _verify_kwargs(self, var_name, vd_names, **limits):
         """
