@@ -24,11 +24,13 @@ print(var.data.shape)
 
 # test romsviz # 542, 211
 filename = "/lustre/storeB/users/josteinb/metroms_run/barents-2.5km/tmp_3M_data/ocean_avg_000*.nc"
+grid_filename = "/home/josteinb/metroms_apps/barents-2.5km/grid/barents_grd.nc"
 d0 = dt.datetime(2017,10,1,12)
-d1 = dt.datetime(2017,12,31,12)
+d1 = dt.datetime(2017,10,10,12)
 
 rviz = rv.RomsViz(filename)
-fig, ax = rviz.depth_time_contour("temp", ocean_time=(d0,d1), xi_rho=200, eta_rho=200)
-#fig, ax = rviz.vertical_csection("temp", ocean_time=(d0,d1), s_rho=41, eta_rho=200)
+#fig, ax = rviz.depth_time_contour("temp", ocean_time=(d0,d1), xi_rho=200, eta_rho=200)
+rviz.set_gridfile(grid_filename)
+fig, ax = rviz.csection("temp", ocean_time=d0, eta_rho=200)
 plt.show()
 

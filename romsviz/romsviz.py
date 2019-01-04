@@ -26,16 +26,24 @@ import ncout  # extracting data from netcdfs
 class RomsViz(ncout.NetcdfOut):
     def __init__(self, filename, infofile="romsviz/namelist.json"):
         super(RomsViz, self).__init__(filename)
-        self.coors = {"x": ["xi_rho", "xi_u", "xi_v", "xi_psi"],
-                      "y": ["eta_rho", "eta_u", "eta_v", "eta_psi"],
-                      "z": ["s_rho", "s_w"],
-                      "t": ["ocean_time"]}
+        self.x_id = "x"
+        self.y_id = "y"
+        self.z_id = "z"
+        self.t_id = "t"
+        self.coors = {self.x_id: ["xi_rho", "xi_u", "xi_v", "xi_psi"],
+                      self.y_id: ["eta_rho", "eta_u", "eta_v", "eta_psi"],
+                      self.z_id: ["s_rho", "s_w"],
+                      self.t_id: ["ocean_time"]}
+        
         self.cmaps = {"temp": cmocean.cm.thermal, "salt": cmocean.cm.haline,
-                      "default": plt.cm.viridis}
-        plt.style.use("seaborn-deep")
-        plt.rc("font", family="serif")
+                      "default": plt.cm.viridis}  # perhaps replace with json input in future
         self.default_title_fs = 20
         self.default_label_fs = 15
+        plt.style.use("seaborn-deep")
+        plt.rc("font", family="serif")
+    
+    def set_gridfile(self, filename):
+        self.gridfile = ncout.NetcdfOut(filename)
     
     def parse_namelist(self, infofile):
         """Function docstring..."""
@@ -49,9 +57,6 @@ class RomsViz(ncout.NetcdfOut):
         var = self.get_var(var_name, **limits)
         ranged_coors = ["t"]
         self.check_range_dims(var, ranged_coors)
-        
-        if len(var.data.shape) > 1:
-            raise ValueError("Only {} can be non-single index!".format(self.time_name))
         
         # plot time series with dates on the x-axis
         fig, ax = self._get_figax(figsize=(12,5), figax=figax)
@@ -104,21 +109,45 @@ class RomsViz(ncout.NetcdfOut):
         
         return fig, ax
     
-    def vertical_csection(self, var_name, figax=None, **limits):
+    def csection(self, var_name, figax=None, **limits):
         """Function docstring..."""
         var = self.get_var(var_name, **limits)
-        ranged_coors = ["x", "y", "z"]
-        self.check_range_dims(var, ranged_coors)
+        ranged_coors = ["x", "y", "z", "t"]
+        range_dims = self.check_range_dims(var, ranged_coors, upper_limit=2)
         
-        z = self.get_sdepths(var)  # depth of s levels associated with <var>
+        any_in = lambda a, b: any(i in b for i in a)
+        
+        if any_in(range_dims, self.coors[self.x_id]):
+            if not hasattr(self, "gridfile"):
+                raise ValueError("No grid file!")
+            
+            x_name = var.identify_dim(self.coors[self.x_id])
+            x_lim = var.extract_lim(x_name)
+            kw = {x_name: x_lim}
+            x_axis = self.gridfile.get_var(x_name, **kw).data
+        
+        if any_in(range_dims, self.coors[self.y_id]):
+            raise ValueError("No grid file!")
+        
+        if any_in(range_dims, self.coors[self.t_id]):
+            x_axis = var.time
+            
+        if any_in(range_dims, self.coors[self.z_id]):
+            y_axis = self.get_sdepths(var)  # depth of s levels associated with <var>
+            import numpy as np
+            y_axis = y_axis[:,np.where(y_axis==np.min(y_axis))[1][0]]
+        
+        print(x_axis.shape, y_axis.shape, var.data.shape)
         
         # plot time series with dates on the x-axis
         fig, ax = self._get_figax(figsize=(12,5), figax=figax)
         
         try:
-            cs = ax.contourf(var.time, z_rho, var.data.transpose(), cmap=self.cmaps[var.name])
+            print(var.data.fill_value)
+            print(np.ma.masked_where(var.data==var.data.fill_value, var.data))
+            cs = ax.contourf(x_axis, y_axis, var.data, cmap=self.cmaps[var.name])
         except KeyError:
-            cs = ax.contourf(var.time, z_rho, var.data.transpose(), cmap=self.cmaps["default"])
+            cs = ax.contourf(x_axis, y_axis, var.data.transpose(), cmap=self.cmaps["default"])
         
         # colorbar stuff
         divider = mpl_toolkits.axes_grid1.make_axes_locatable(ax)
@@ -138,22 +167,37 @@ class RomsViz(ncout.NetcdfOut):
         
         return fig, ax
     
-    def field_2d(self):
+    def horizontal_csection(self, var_name, figax=None, **limits):
         """Function docstring..."""
-        raise NotImplementedError("Needs to be overwritten by subclass!")
+        limits["s_rho"] = 41  # default to surface
+        raise NotImplementedError()
     
     def images_to_mp4(self, method="convert"):
         """Function docstring..."""
+        if method == "convert":
+            subprocess.call("convert -loop 0 -delay 10 -hax 1 {} {}".format(wildcard, output_fn))
+        
+        elif method == "builtin":
+            anim = animation.FuncAnimation()
+            anim.save(output_fn)
+            
         raise NotImplementedError
     
-    def check_range_dims(self, var, answers):
+    def check_range_dims(self, var, answers, upper_limit=1):
         """Function docstring..."""
         range_dims = self._get_range_dims(var.dim_names, var.lims)
-        all_possible = [d for c in answers for d in self.coors[c] if d in var.dim_names]
+        allowed = [d for c in answers for d in self.coors[c] if d in var.dim_names]
+        print(range_dims)
+        print(allowed)
         
         for r_dim in range_dims:
-            if r_dim not in all_possible:
-                raise ValueError("{} cannot span multiple indices here!".format(r_dim))
+            if r_dim not in allowed:
+                raise ValueError("{} cannot span multiple indices!".format(r_dim))
+        
+        if len(range_dims) > upper_limit:
+            raise ValueError("Only {} dimensions can span multiple indices!".format(upper_limit))
+            
+        return range_dims
                 
     def get_sdepths(self, var):
         """Function docstring..."""
@@ -174,12 +218,12 @@ class RomsViz(ncout.NetcdfOut):
         # variable defined at rho s-levels
         if z_name == "s_rho":
             C = self.get_var("Cs_r").data
-            z = roppy.sdepth(h, H_c, C, Vtransform=vtrans)[slices]
+            z = roppy.sdepth(h, H_c, C, Vtransform=vtrans, stagger="rho")[slices]
         
         # variable defined at w s-levels
         elif z_name == "s_w":
             C_w = self.get_var("Cs_w").data
-            z = roppy.sdepth(h, H_c, C_w, Vtransform=vtrans)[slices]  # w s-levels
+            z = roppy.sdepth(h, H_c, C_w, Vtransform=vtrans, stagger="w")[slices]
         
         return z.squeeze()
     

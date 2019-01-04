@@ -211,7 +211,7 @@ class NetcdfOut(object):
         range_dims = list()
         
         for d_name, lim in zip(dim_names, lims):
-            if lim[1] != lim[0]:
+            if lim[1] != lim[0] or None in lim:
                 range_dims.append(d_name)
         
         return range_dims
