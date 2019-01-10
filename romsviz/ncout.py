@@ -1,12 +1,14 @@
 
 # ============================================================================================
-# TODO: (issue): Some more docstrings
+# TODO: (issue) Some more docstrings
 # TODO: (enhance) Consider storing full time array (across files) in __init__ (if exists) and use it for dim lims later
-# TODO: Possibly move datatype checking in _get_dim_lims() to _verify_kwargs()
+# TODO: (enhance) Possibly move datatype checking in _get_dim_lims() to _verify_kwargs()
+# TODO: (issue) Using netCDF4.num2date() with var.units is risky
 # ============================================================================================
 
 import sys
 import glob
+import logging
 import collections
 import datetime as dt
 import numpy as np
@@ -23,20 +25,29 @@ class NetcdfOut(object):
           automatic expansion of the wildcard is assumed to list the files in the correct order.
         * There are only one unlimited dimension and that is time.
     """
-    def __init__(self, filepath):
+    def __init__(self, filepath, debug=False):
         """
         Constructor function that sets attributes and opens all input files.
-        Also extracts the dimensions of the data set for later use.
+        Also extracts the dimensions of the dataset for later use. Also
+        enables/disables logging for debugging purposes.
         
         Args:
             filepath (str/list) : Path/wildcard/list to netcdf data file(s)
+            debug (bool)        : True/False to turn on/off debug mode
         """
+        if debug:
+            logging.basicConfig(level=logging.NOTSET)
+            logging.info("debug mode enabled!")
+        
+        else:
+            logging.basicConfig(level=logging.CRITICAL)
+            
         self.filepath = filepath
         self.filepaths, self.netcdfs = self.open_data()
         self.dims = {k.encode("utf8"): v for k, v in self.netcdfs[0].dimensions.items()}
         self.default_lim = (None, None)
         self.time_name, self.time_dim = self._get_unlimited_dim()
-    
+            
     def open_data(self):
         """
         Function that parses instance attribute self.filepath and interpretates it
@@ -64,7 +75,7 @@ class NetcdfOut(object):
         # loop over each filepath and open netcdf file
         for path in filepaths:
             try:
-                print("Opening file {}".format(path))
+                logging.debug("opening file {}".format(path))
                 netcdfs.append(netCDF4.Dataset(path, "r"))
             
             except Exception as e:
@@ -103,10 +114,15 @@ class NetcdfOut(object):
                                   dimension defaults to (0, dim.size).
         
         Returns:
-            data (numpy.ndarray or float) : Data extracted from the variable within
-                                            the index limits specified. Only float
-                                            when a scalar is requested, else an ndarray.
+            var (outvar.OutVar) : Custom variable object containing info about the
+                                  extracted variable including a data array within
+                                  the index limits specified. If the variable has a
+                                  time dimension, the object contains a datetime array
+                                  for the relevant time range of the extracted variable.
         """
+        logging.debug("extracting variable {}".format(var_name))
+        logging.debug("user supllied dimension limits: {}".format(limits))
+        
         # store info in OutVar object and verify user inputed dimension limits
         var = outvar.OutVar()
         var.name = var_name
@@ -131,6 +147,7 @@ class NetcdfOut(object):
             # loop through the all data sets and extract data if inside time limits
             for i, ds in enumerate(self.netcdfs):
                 if var.use_files[i]:
+                    logging.debug("getting data from file {}".format(self.filepaths[i]))
                     lims[i_td] = var.t_dist[i]
                     slices = self._lims_to_slices(lims)
                     array = self._get_var_nd(var.name, slices, ds)
@@ -290,10 +307,12 @@ class NetcdfOut(object):
             lims (list) : Start- and end limits for time (can
                           be both datetime or indices (int))
         """
+        int_types = [int, np.int8, np.int16, np.int32, np.int64]
+        
         if t_lim == self.default_lim:
             return (0, total_length - 1)
         
-        elif type(t_lim[0]) is int or type(t_lim[1]) is int:
+        elif type(t_lim[0]) in int_types or type(t_lim[1]) in int_types:
             return t_lim
             
         elif type(t_lim[0]) is dt.datetime:
@@ -302,11 +321,12 @@ class NetcdfOut(object):
             return (idx_start, idx_stop)
         
         else:
-            raise TypeError("Invalid limits {} for {}".format(t_lim, self.time_name))
+            raise TypeError("Invalid limits {} for {} (use int/None/datetime)".format(
+                t_lim, self.time_name))
     
     def _idx_from_date(self, date):
         """Function docstring..."""
-        idx = np.where(self.time == date)  # assume only 1 occurence of date
+        idx = np.where(self.time == date)  # assume only 1 occurrence of date
         
         if len(idx[0]) == 0:
             raise ValueError("Date {} not in {}!".format(date, self.time_name))
